@@ -165,6 +165,12 @@ export default class DialogMachine extends TalkMachine {
   }
 
   /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * Autres fonctions
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+
+  /**
    *  fonction shorthand pour dire un texte avec la voix prédéfinie
    *  @param {string} _text le texte à dire
    */
@@ -230,6 +236,11 @@ export default class DialogMachine extends TalkMachine {
   }
 
   /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * Overrides de TalkMachine
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  /**
    * override de _handleButtonPressed de TalkMachine
    * @override
    * @protected
@@ -283,6 +294,12 @@ export default class DialogMachine extends TalkMachine {
   _handleUserInputError() {
     this.fancyLogger.logWarning('user input is not allowed at this time');
   }
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * Fonctions pour le simulateur
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
 
   /**
    * Gérer les boutons test UI du simulateur
