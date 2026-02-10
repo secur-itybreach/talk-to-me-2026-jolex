@@ -94,6 +94,84 @@ export default class DialogMachine extends TalkMachine {
         this.goToNextState();
         break;
 
+      case "welcome":
+        // CONCEPT DE DIALOGUE: Salutation - établit le contexte et définit les attentes
+        this.ledsAllChangeColor("white", 1);
+        this.fancyLogger.logMessage(
+          "Welcome, you have got 2 buttons, press one of them",
+        );
+        this.nextState = "choose-color";
+        break;
+
+      case "choose-color":
+        // CONCEPT DE DIALOGUE: Branchement - le choix de l'utilisateur affecte le chemin de conversation
+        // Bouton 0 = Choix bleu, Bouton 1 = Choix jaune
+        if (button == 0) {
+          this.nextState = "choose-blue";
+          this.goToNextState();
+        }
+        if (button == 1) {
+          this.nextState = "choose-yellow";
+          this.goToNextState();
+        }
+        break;
+
+      case "choose-blue":
+        // CONCEPT DE DIALOGUE: Retour positif - renforce le choix de l'utilisateur
+        this.fancyLogger.logMessage(
+          "blue was a good choice, press any button to continue",
+        );
+        this.ledsAllChangeColor("green", 0);
+        this.nextState = "can-speak";
+        break;
+
+      case "choose-yellow":
+        // CONCEPT DE DIALOGUE: Boucle - la conversation retourne à l'état précédent
+        // Cela crée un motif de "réessayer" dans le dialogue
+        this.fancyLogger.logMessage(
+          "yellow was a bad choice, press blue button to continue",
+        );
+        this.ledsAllChangeColor("red", 0);
+        this.nextState = "choose-color";
+        this.goToNextState();
+        break;
+
+      case "can-speak":
+        // CONCEPT DE DIALOGUE: Initiative système - la machine parle sans attendre d'entrée
+        this.speakNormal("I can speak, i can count. Press a button.");
+        this.nextState = "count-press";
+        this.ledsAllChangeColor("blue", 2);
+        break;
+
+      case "count-press":
+        // CONCEPT DE DIALOGUE: Mémoire d'état - le système se souvient des interactions précédentes
+        // Le compteur persiste à travers plusieurs pressions de bouton
+        this.buttonPressCounter++;
+
+        if (this.buttonPressCounter > 3) {
+          this.nextState = "toomuch";
+          this.goToNextState();
+        } else {
+          this.speakNormal("you pressed " + this.buttonPressCounter + " time");
+        }
+        break;
+
+      case "toomuch":
+        // CONCEPT DE DIALOGUE: Transition conditionnelle - le comportement change selon l'état accumulé
+        this.speakNormal("You are pressing too much! I Feel very pressed");
+        this.nextState = "enough-pressed";
+        break;
+
+      case "enough-pressed":
+        // CONCEPT DE DIALOGUE: État terminal - la conversation se termine ici
+        //this.speak('Enough is enough! I dont want to be pressed anymore!');
+        this.speechText(
+          "Enough is enough! I dont want to be pressed anymore!",
+          ["en-GB", 1, 1.3],
+        );
+        this.ledsAllChangeColor("red", 1);
+        break;
+
       default:
         this.fancyLogger.logWarning(
           `Sorry but State: "${this.nextState}" has no case defined`,
