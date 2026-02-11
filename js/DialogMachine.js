@@ -35,7 +35,7 @@ export default class DialogMachine extends TalkMachine {
     this.lastGroundPair = null; // Tracks the last pair that completed a long press
     this.longPressThreshold = 3000; // 3 seconds in milliseconds
     this.pairPressTimers = {}; // Tracks timers for each pair
-    this.longPressTriggered = {}; // Tracks if long press already triggered for each pair
+    
     
     // Button pair definitions: pair 1 = buttons 1&2, pair 2 = buttons 3&4, pair 3 = buttons 5&6
     this.buttonPairs = {
@@ -49,6 +49,23 @@ export default class DialogMachine extends TalkMachine {
     this.windLedStepperInitialized = false;
     this.hourLedStepperInitialized = false;
     this.pollutionLedStepperInitialized = false;
+    
+    // State-specific counters - track how many LEDs are lit in each mode
+    this.rainCount = 0;      // Number of white LEDs in choose-rain
+    this.windCount = 0;      // Number of white LEDs in choose-wind
+    this.hourCount = 0;      // Number of white LEDs in choose-hour
+    this.pollutionCount = 0; // Number of white LEDs in choose-pollution
+    
+    // State-specific LED states - preserve LED patterns for each mode
+    this.rainLedStates = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    this.windLedStates = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    this.hourLedStates = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    this.pollutionLedStates = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    
+    // Button 0 press tracking for summary state
+    this.button0PressCount = 0;
+    this.button0FirstPressTime = null;
+    this.button0MaxDuration = 3000; // 3 seconds max to press 4 times
   }
 
   /**
@@ -61,9 +78,9 @@ export default class DialogMachine extends TalkMachine {
    */
   getCurrentLedArray() {
     const ledMapping = {
-      "1": [20, 21, 22, 23, 24, 25, 26, 27, 28, 29],      // Pair 1 (buttons 1&2): LEDs 0-9
-      "2": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],  // Pair 2 (buttons 3&4): LEDs 10-19
-      "3": [19, 18, 17, 16, 15, 14, 13, 12, 11, 10]   // Pair 3 (buttons 5&6): LEDs 20-29
+      "1": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],      // Pair 1 (buttons 1&2): LEDs 0-9
+      "2": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19],  // Pair 2 (buttons 3&4): LEDs 10-19
+      "3": [20, 21, 22, 23, 24, 25, 26, 27, 28, 29]   // Pair 3 (buttons 5&6): LEDs 20-29
     };
     
     // Default to floor 1 if no ground pair is set
@@ -108,6 +125,7 @@ export default class DialogMachine extends TalkMachine {
    * Local LED stepper: works with indices 0-9 for the current floor
    * Action "+" : first black -> white
    * Action "-" : last white -> black
+   * Also updates the state-specific counter (rainCount, windCount, etc.)
    * @param {string} action - "+" or "-"
    * @private
    */
@@ -120,6 +138,9 @@ export default class DialogMachine extends TalkMachine {
       // Turn on this local LED
       this.localLedStates[localIdx] = 1;
       this.lightUpLocalLed(localIdx, 255, 255, 255); // White
+      
+      // Update the appropriate counter based on current state
+      this._updateStateCounter("+");
       
       this.fancyLogger.logMessage(`LED Stepper +: Local LED ${localIdx} turned ON`);
       return;
@@ -134,10 +155,87 @@ export default class DialogMachine extends TalkMachine {
       this.localLedStates[localIdx] = 0;
       this.lightUpLocalLed(localIdx, 0, 0, 0); // Black
       
+      // Update the appropriate counter based on current state
+      this._updateStateCounter("-");
+      
       this.fancyLogger.logMessage(`LED Stepper -: Local LED ${localIdx} turned OFF`);
       console.log(`[local-led-stepper] action=${action} localLedStates=`, [
         ...this.localLedStates,
       ]);
+    }
+  }
+
+  /**
+   * Update the state-specific counter based on the current state
+   * @param {string} action - "+" to increment, "-" to decrement
+   * @private
+   */
+  _updateStateCounter(action) {
+    const increment = action === "+" ? 1 : -1;
+    
+    if (this.nextState === "choose-rain") {
+      this.rainCount += increment;
+      this.rainCount = Math.max(0, Math.min(10, this.rainCount)); // Clamp between 0-10
+      this.fancyLogger.logMessage(`Rain Count: ${this.rainCount}/10`);
+    } else if (this.nextState === "choose-wind") {
+      this.windCount += increment;
+      this.windCount = Math.max(0, Math.min(10, this.windCount)); // Clamp between 0-10
+      this.fancyLogger.logMessage(`Wind Count: ${this.windCount}/10`);
+    } else if (this.nextState === "choose-hour") {
+      this.hourCount += increment;
+      this.hourCount = Math.max(0, Math.min(10, this.hourCount)); // Clamp between 0-10
+      this.fancyLogger.logMessage(`Hour Count: ${this.hourCount}/10`);
+    } else if (this.nextState === "choose-pollution") {
+      this.pollutionCount += increment;
+      this.pollutionCount = Math.max(0, Math.min(10, this.pollutionCount)); // Clamp between 0-10
+      this.fancyLogger.logMessage(`Pollution Count: ${this.pollutionCount}/10`);
+    }
+  }
+
+  /**
+   * Save current LED states to the appropriate state-specific array
+   * @private
+   */
+  _saveCurrentStateLedStates() {
+    if (this.nextState === "choose-rain") {
+      this.rainLedStates = [...this.localLedStates];
+    } else if (this.nextState === "choose-wind") {
+      this.windLedStates = [...this.localLedStates];
+    } else if (this.nextState === "choose-hour") {
+      this.hourLedStates = [...this.localLedStates];
+    } else if (this.nextState === "choose-pollution") {
+      this.pollutionLedStates = [...this.localLedStates];
+    }
+  }
+
+  /**
+   * Restore LED states from the appropriate state-specific array
+   * @param {string} targetState - The state to restore LEDs for
+   * @private
+   */
+  _restoreStateLedStates(targetState) {
+    let savedStates = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    
+    if (targetState === "choose-rain") {
+      savedStates = [...this.rainLedStates];
+    } else if (targetState === "choose-wind") {
+      savedStates = [...this.windLedStates];
+    } else if (targetState === "choose-hour") {
+      savedStates = [...this.hourLedStates];
+    } else if (targetState === "choose-pollution") {
+      savedStates = [...this.pollutionLedStates];
+    }
+    
+    // Apply the saved states to localLedStates and render them
+    this.localLedStates = [...savedStates];
+    
+    // Render all LEDs based on saved state
+    for (let i = 0; i < this.localLedStates.length; i++) {
+      if (this.localLedStates[i] === 1) {
+        this.lightUpLocalLed(i, 255, 255, 255); // White
+      } else {
+        this.lightUpLocalLed(i, 0, 0, 0); // Black
+      }
     }
   }
 
@@ -164,6 +262,12 @@ export default class DialogMachine extends TalkMachine {
     this.windLedStepperInitialized = false;
     this.hourLedStepperInitialized = false;
     this.pollutionLedStepperInitialized = false;
+    
+    // Reset state-specific counters
+    this.rainCount = 0;
+    this.windCount = 0;
+    this.hourCount = 0;
+    this.pollutionCount = 0;
 
     this.fancyLogger.logMessage(
       "Dialog started: Long-press button pairs (1&2, 3&4, or 5&6) to begin...",
@@ -291,6 +395,41 @@ export default class DialogMachine extends TalkMachine {
         
         // LED stepper is handled in _handleButtonPressed for buttons 0 and 1
         this.waitingForUserInput = true;
+        break;
+
+      case "summary":
+        // CONCEPT: Display all collected parameters and wait for 4 presses of button 0
+        this.fancyLogger.logMessage("═══════════════════════════════════");
+        this.fancyLogger.logMessage("SUMMARY OF YOUR SELECTIONS:");
+        this.fancyLogger.logMessage(`Rain Count: ${this.rainCount}/10`);
+        this.fancyLogger.logMessage(`Wind Count: ${this.windCount}/10`);
+        this.fancyLogger.logMessage(`Hour Count: ${this.hourCount}/10`);
+        this.fancyLogger.logMessage(`Pollution Count: ${this.pollutionCount}/10`);
+        this.fancyLogger.logMessage("═══════════════════════════════════");
+        this.fancyLogger.logMessage("Press button 0 FOUR times within 3 seconds to continue...");
+        
+        this.speakNormal("Summary complete. Press button zero four times to finish.");
+        
+        // Reset button 0 press tracking
+        this.button0PressCount = 0;
+        this.button0FirstPressTime = null;
+        
+        this.waitingForUserInput = true;
+        break;
+
+      case "final":
+        // CONCEPT: Final state after successful button 0 sequence
+        this.fancyLogger.logMessage("═══════════════════════════════════");
+        this.fancyLogger.logMessage("🎉 CONGRATULATIONS! 🎉");
+        this.fancyLogger.logMessage("You have completed the dialog!");
+        this.fancyLogger.logMessage("═══════════════════════════════════");
+        
+        this.speakNormal("Congratulations! You have reached the end!");
+        
+        // Turn all LEDs to a celebratory color
+        this.ledsAllChangeColor("green", 1); // Blinking green
+        
+        this.waitingForUserInput = false;
         break;
 
       default:
@@ -455,87 +594,62 @@ export default class DialogMachine extends TalkMachine {
     // DEBUG: Buttons 7, 8, 9 simulate pair long-presses
     if (button === "7" && this.waitingForUserInput) {
       this.fancyLogger.logMessage("DEBUG: Button 7 pressed - simulating pair 1 (buttons 1&2) long-press");
-      this._handlePairLongPressedImmediate(1);
+      this._handleGroundDetection(1);
       return;
     }
     if (button === "8" && this.waitingForUserInput) {
       this.fancyLogger.logMessage("DEBUG: Button 8 pressed - simulating pair 2 (buttons 3&4) long-press");
-      this._handlePairLongPressedImmediate(2);
+      this._handleGroundDetection(2);
       return;
     }
     if (button === "9" && this.waitingForUserInput) {
       this.fancyLogger.logMessage("DEBUG: Button 9 pressed - simulating pair 3 (buttons 5&6) long-press");
-      this._handlePairLongPressedImmediate(3);
+      this._handleGroundDetection(3);
       return;
     }
     
-    // === GROUND IS NOT SET - CHECK FOR GROUND PAIR DETECTION ===
-    if (this.currentGroundPair === null) {
-      // Check if this button is part of a ground pair
-      const pairNumber = this._getButtonPair(button);
-      
-      if (pairNumber) {
-        // Check if both buttons in the pair are now pressed
-        if (this._areBothButtonsInPairPressed(pairNumber)) {
-          // Both buttons are pressed - start timer for this pair
-          
-          // Clear any existing timer for this pair
-          if (this.pairPressTimers[pairNumber]) {
-            clearTimeout(this.pairPressTimers[pairNumber]);
-          }
-          
-          // Reset the triggered flag
-          this.longPressTriggered[pairNumber] = false;
-          
-          this.fancyLogger.logMessage(`Both buttons in pair ${pairNumber} pressed - starting 3sec timer for ground detection`);
-          
-          // Set new timer to trigger after longPressThreshold
-          this.pairPressTimers[pairNumber] = setTimeout(() => {
-            // Check if both buttons are STILL pressed after the threshold
-            if (this._areBothButtonsInPairPressed(pairNumber) && !this.longPressTriggered[pairNumber]) {
-              this.longPressTriggered[pairNumber] = true;
-              this._handlePairLongPressedImmediate(pairNumber);
-            }
-          }, this.longPressThreshold);
-        }
-      }
-      return; // Don't process anything else when ground is not set
+    // SPECIAL: Handle button 0 presses in summary state
+    if (this.nextState === "summary" && button === "0") {
+      this._handleButton0PressInSummary();
+      return;
     }
     
-    // === GROUND IS SET ===
-    
-    // First, check if this button is part of a DIFFERENT ground pair being pressed
+    // === GROUND PAIR DETECTION (works for both initial detection and switching) ===
     const pairNumber = this._getButtonPair(button);
     
-    // If this is a different pair than the current ground, check for ground switching
-    if (pairNumber && pairNumber !== this.currentGroundPair) {
-      // Check if both buttons in this NEW pair are now pressed
-      if (this._areBothButtonsInPairPressed(pairNumber)) {
-        // Both buttons are pressed - start timer for this pair to switch ground
-        
-        // Clear any existing timer for this pair
-        if (this.pairPressTimers[pairNumber]) {
-          clearTimeout(this.pairPressTimers[pairNumber]);
-        }
-        
-        // Reset the triggered flag
-        this.longPressTriggered[pairNumber] = false;
-        
-        this.fancyLogger.logMessage(`Both buttons in pair ${pairNumber} pressed - starting 3sec timer to switch ground from ${this.currentGroundPair}`);
-        
-        // Set new timer to trigger after longPressThreshold
-        this.pairPressTimers[pairNumber] = setTimeout(() => {
-          // Check if both buttons are STILL pressed after the threshold
-          if (this._areBothButtonsInPairPressed(pairNumber) && !this.longPressTriggered[pairNumber]) {
-            this.longPressTriggered[pairNumber] = true;
-            this._handleGroundSwitch(pairNumber);
-          }
-        }, this.longPressThreshold);
+    // Check if this button is part of a pair that should trigger ground detection/switching
+    const isNewPair = pairNumber && (
+      this.currentGroundPair === null ||  // No ground set yet
+      pairNumber !== this.currentGroundPair  // Different pair than current ground
+    );
+    
+    if (isNewPair && this._areBothButtonsInPairPressed(pairNumber)) {
+      // Clear any existing timer for this pair
+      if (this.pairPressTimers[pairNumber]) {
+        clearTimeout(this.pairPressTimers[pairNumber]);
       }
+      
+      
+      
+      const isInitialDetection = this.currentGroundPair === null;
+
+      
+      // Set timer to trigger after threshold
+      this.pairPressTimers[pairNumber] = setTimeout(() => {
+        if (this._areBothButtonsInPairPressed(pairNumber)) {
+          
+          // Use the same handler for both initial detection and switching
+          this._handleGroundDetection(pairNumber);
+        }
+      }, this.longPressThreshold);
+      
+      // If no ground is set, don't process LED stepper buttons
+      if (isInitialDetection) return;
     }
     
-    // Handle LED stepper buttons (works in parallel with ground switching detection)
-    if ((this.nextState === "choose-rain" || 
+    // === GROUND IS SET - HANDLE LED STEPPER BUTTONS ===
+    if (this.currentGroundPair !== null && 
+        (this.nextState === "choose-rain" || 
          this.nextState === "choose-wind" || 
          this.nextState === "choose-hour" || 
          this.nextState === "choose-pollution")) {
@@ -545,30 +659,20 @@ export default class DialogMachine extends TalkMachine {
       // Determine which buttons are stepper buttons based on current ground pair
       if (this.currentGroundPair === 1) {
         // Ground pair is 1&2, so 5 is -, 6 is +
-        if (button === "5") {
-          stepperAction = "-";
-        } else if (button === "6") {
-          stepperAction = "+";
-        }
+        if (button === "5") stepperAction = "-";
+        else if (button === "6") stepperAction = "+";
       } else if (this.currentGroundPair === 2) {
         // Ground pair is 3&4, so 1 is -, 2 is +
-        if (button === "1") {
-          stepperAction = "-";
-        } else if (button === "2") {
-          stepperAction = "+";
-        }
+        if (button === "1") stepperAction = "-";
+        else if (button === "2") stepperAction = "+";
       } else if (this.currentGroundPair === 3) {
         // Ground pair is 5&6, so 3 is -, 4 is +
-        if (button === "3") {
-          stepperAction = "-";
-        } else if (button === "4") {
-          stepperAction = "+";
-        }
+        if (button === "3") stepperAction = "-";
+        else if (button === "4") stepperAction = "+";
       }
       
       if (stepperAction) {
         this._handleLocalLedStepper(stepperAction);
-        return;
       }
     }
   }
@@ -576,47 +680,46 @@ export default class DialogMachine extends TalkMachine {
   _handleButtonReleased(button, simulated = false) {
     this.buttonStates[button] = 0;
     
+    // SPECIAL: Handle button 0 release in summary state
+    if (this.nextState === "summary" && button === "0") {
+      this._handleButton0ReleaseInSummary();
+      return;
+    }
+    
     // Check if this button is part of a ground pair
     const pairNumber = this._getButtonPair(button);
-    
-    // === GROUND IS NOT SET - CANCEL GROUND DETECTION TIMER IF BUTTON RELEASED ===
-    if (this.currentGroundPair === null) {
+    // Check if this button is part of a pair that should trigger ground detection/switching
+    const isNewPair = pairNumber && (
+      this.currentGroundPair === null ||  // No ground set yet
+      pairNumber !== this.currentGroundPair && this.pairPressTimers[pairNumber] // Different pair than current ground
+    );
+    // === GROUND ===
+    if (isNewPair) {
       // Clear any long press timer for this pair when either button is released
-      if (pairNumber && this.pairPressTimers[pairNumber]) {
+      
         clearTimeout(this.pairPressTimers[pairNumber]);
         delete this.pairPressTimers[pairNumber];
         this.fancyLogger.logMessage(`Pair ${pairNumber} timer cancelled - button ${button} released before 3 seconds`);
-      }
+    
       return; // Don't process anything else when ground is not set
     }
     
-    // === GROUND IS SET ===
     
-    // If this is a button from a DIFFERENT pair (potential ground switch), cancel its timer
-    if (pairNumber && pairNumber !== this.currentGroundPair && this.pairPressTimers[pairNumber]) {
-      clearTimeout(this.pairPressTimers[pairNumber]);
-      delete this.pairPressTimers[pairNumber];
-      this.fancyLogger.logMessage(`Pair ${pairNumber} ground switch timer cancelled - button ${button} released before 3 seconds`);
-    }
     
     // LED stepper buttons work on press only, no need to handle releases
     
     if (!this.dialogStarted || !this.waitingForUserInput) return;
 
-    // Handle old LED stepper mode if needed
-    if (this.mode === "led-stepper") {
-      this.fancyLogger.logMessage(`button released raw=${button}`);
-      this._handleLedStepper(button);
-      return;
-    }
+    
   }
 
   /**
    * Immediate long press handler - called when threshold is reached while both buttons in pair are still held
+   * Handles both initial ground detection and ground switching
    * @param {number} pairNumber - The pair number (1, 2, or 3)
    * @private
    */
-  _handlePairLongPressedImmediate(pairNumber) {
+  _handleGroundDetection(pairNumber) {
     if (!this.waitingForUserInput) return;
 
     // Verify both buttons are still pressed
@@ -629,7 +732,7 @@ export default class DialogMachine extends TalkMachine {
 
     // Handle based on current state
     if (this.nextState === "waiting-for-ground") {
-      // First long press - go to welcome immediately
+      // First long press - set ground and go to welcome
       this.currentGroundPair = pairNumber;
       this.lastGroundPair = pairNumber;
       this.nextState = "welcome";
@@ -645,7 +748,10 @@ export default class DialogMachine extends TalkMachine {
       }
       
       // It's a DIFFERENT ground pair - switch state
-      this.fancyLogger.logMessage(`Switching from pair ${this.lastGroundPair} to pair ${pairNumber}`);
+      this.fancyLogger.logMessage(`GROUND SWITCH: Switching from pair ${this.lastGroundPair} to pair ${pairNumber}`);
+      
+      // Save current state's LED configuration before switching
+      this._saveCurrentStateLedStates();
       
       // Turn off LEDs from the previous floor before switching
       this.turnOffCurrentFloorLeds();
@@ -654,22 +760,31 @@ export default class DialogMachine extends TalkMachine {
       this.currentGroundPair = pairNumber;
       this.lastGroundPair = pairNumber;
       
-      // Reset local LED states when switching floors
-      this.localLedStates.fill(0);
+      // Determine the next state and restore its LED configuration
+      let targetState = "";
       
-      // Cycle through states: rain → wind → hour → pollution → rain
+      // Cycle through states: rain → wind → hour → pollution → summary
       if (this.nextState === "choose-rain") {
         this.windLedStepperInitialized = false;
+        targetState = "choose-wind";
         this.nextState = "choose-wind";
       } else if (this.nextState === "choose-wind") {
         this.hourLedStepperInitialized = false;
+        targetState = "choose-hour";
         this.nextState = "choose-hour";
       } else if (this.nextState === "choose-hour") {
         this.pollutionLedStepperInitialized = false;
+        targetState = "choose-pollution";
         this.nextState = "choose-pollution";
       } else if (this.nextState === "choose-pollution") {
-        this.rainLedStepperInitialized = false;
-        this.nextState = "choose-rain";
+        // After pollution, go to summary instead of cycling back
+        targetState = "summary";
+        this.nextState = "summary";
+      }
+      
+      // Restore the LED states for the new state (except for summary which doesn't have LEDs)
+      if (targetState !== "summary") {
+        this._restoreStateLedStates(targetState);
       }
       
       this.dialogFlow();
@@ -677,53 +792,61 @@ export default class DialogMachine extends TalkMachine {
   }
 
   /**
-   * Handle ground switching - called when a different pair is held for 3 seconds while ground is already set
-   * @param {number} newPairNumber - The new pair number to switch to (1, 2, or 3)
+   * Handle button 0 press in summary state
+   * Tracks presses and checks if 4 presses occur within 3 seconds
    * @private
    */
-  _handleGroundSwitch(newPairNumber) {
-    if (!this.waitingForUserInput) return;
-
-    // Verify both buttons are still pressed
-    if (!this._areBothButtonsInPairPressed(newPairNumber)) {
-      this.fancyLogger.logWarning(`Ground switch to pair ${newPairNumber} triggered but buttons no longer both pressed`);
+  _handleButton0PressInSummary() {
+    const currentTime = Date.now();
+    
+    // If this is the first press, start the timer
+    if (this.button0PressCount === 0) {
+      this.button0FirstPressTime = currentTime;
+      this.button0PressCount = 1;
+      this.fancyLogger.logMessage(`Button 0 press 1/4`);
       return;
     }
-
-    this.fancyLogger.logMessage(`GROUND SWITCH: Switching from pair ${this.currentGroundPair} to pair ${newPairNumber}`);
-
-    // Turn off LEDs from the previous floor before switching
-    this.turnOffCurrentFloorLeds();
     
-    // Update to new pair
-    this.currentGroundPair = newPairNumber;
-    this.lastGroundPair = newPairNumber;
+    // Check if we're still within the 3-second window
+    const elapsedTime = currentTime - this.button0FirstPressTime;
     
-    // Reset local LED states when switching floors
-    this.localLedStates.fill(0);
-    
-    // Cycle through states: rain → wind → hour → pollution → rain
-    if (this.nextState === "choose-rain") {
-      this.windLedStepperInitialized = false;
-      this.nextState = "choose-wind";
-    } else if (this.nextState === "choose-wind") {
-      this.hourLedStepperInitialized = false;
-      this.nextState = "choose-hour";
-    } else if (this.nextState === "choose-hour") {
-      this.pollutionLedStepperInitialized = false;
-      this.nextState = "choose-pollution";
-    } else if (this.nextState === "choose-pollution") {
-      this.rainLedStepperInitialized = false;
-      this.nextState = "choose-rain";
+    if (elapsedTime > this.button0MaxDuration) {
+      // Too much time has passed, reset the counter
+      this.fancyLogger.logWarning(`Too slow! Resetting. Press button 0 four times within 3 seconds.`);
+      this.button0PressCount = 1;
+      this.button0FirstPressTime = currentTime;
+      this.fancyLogger.logMessage(`Button 0 press 1/4`);
+      return;
     }
     
-    this.dialogFlow();
+    // We're within the time window, increment the press count
+    this.button0PressCount++;
+    this.fancyLogger.logMessage(`Button 0 press ${this.button0PressCount}/4 (${(elapsedTime/1000).toFixed(1)}s elapsed)`);
+    
+    // Check if we've reached 4 presses
+    if (this.button0PressCount >= 4) {
+      this.fancyLogger.logMessage(`✓ Success! Four presses in ${(elapsedTime/1000).toFixed(1)} seconds!`);
+      // Don't transition yet - wait for the 4th release
+    }
+  }
+
+  /**
+   * Handle button 0 release in summary state
+   * If 4 presses were completed, transition to final state
+   * @private
+   */
+  _handleButton0ReleaseInSummary() {
+    // Only transition to final state if we've completed 4 presses
+    if (this.button0PressCount >= 4) {
+      this.nextState = "final";
+      this.goToNextState();
+    }
   }
 
   /**
    * override de _handleButtonLongPressed de TalkMachine
    * This is called on button RELEASE by the parent class if duration >= longPressDelay
-   * We handle everything immediately in _handlePairLongPressedImmediate, so this does nothing
+   * We handle everything immediately in _handleGroundDetection, so this does nothing
    * @override
    * @protected
    */
