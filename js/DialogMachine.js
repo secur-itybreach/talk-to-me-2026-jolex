@@ -490,7 +490,8 @@ export default class DialogMachine extends TalkMachine {
         this.fancyLogger.logMessage("You have completed the dialog!");
         this.fancyLogger.logMessage("═══════════════════════════════════");
 
-        this.speakNormal("Congratulations! You have reached the end!");
+        const match = this.findClosestLocation();
+        this.speakNormal(`Your climate match is ${match.name}.`);
 
         // Turn all LEDs to a celebratory color
         this.ledsAllChangeColor("green", 1); // Blinking green
@@ -961,7 +962,126 @@ export default class DialogMachine extends TalkMachine {
       this.goToNextState();
     }
   }
+  findClosestLocation() {
+// Create the final choice array
+this.finalChoice = [
+this.rainCount,
+this.windCount,
+this.hourCount,
+this.pollutionCount,
+this.temperatureCount
+];
 
+// Database of locations with their climate profiles
+const locationDatabase = [
+    // FROID POLAIRE / SUBPOLAIRE
+    { name: "McMurdo, Antarctique", profile: [1, 3, 9, 1, 1], category: "Froid Polaire" },
+    { name: "Vostok, Antarctique", profile: [1, 2, 10, 1, 1], category: "Froid Polaire" },
+    { name: "Longyearbyen, Svalbard", profile: [2, 4, 9, 1, 2], category: "Froid Polaire" },
+    { name: "Reykjavik, Islande", profile: [4, 5, 8, 2, 3], category: "Froid Polaire" },
+    { name: "Nuuk, Groenland", profile: [3, 5, 9, 1, 2], category: "Froid Polaire" },
+
+    // OCÉANIQUE / PLUVIEUX
+    { name: "Bergen, Norvège", profile: [6, 4, 7, 2, 4], category: "Océanique" },
+    { name: "Vancouver, Canada", profile: [4, 3, 7, 3, 5], category: "Océanique" },
+    { name: "Seattle, USA", profile: [4, 3, 7, 5, 5], category: "Océanique" },
+    { name: "Dublin, Irlande", profile: [3, 4, 8, 4, 5], category: "Océanique" },
+    { name: "Wellington, NZ", profile: [5, 6, 8, 3, 6], category: "Océanique" },
+
+    // TROPICAL HUMIDE / ORAGEUX
+    { name: "Amazonas, Brésil", profile: [8, 3, 6, 2, 8], category: "Tropical Humide" },
+    { name: "Manaus, Brésil", profile: [7, 2, 6, 6, 8], category: "Tropical Humide" },
+    { name: "Bangkok, Thaïlande", profile: [7, 2, 7, 8, 9], category: "Tropical Humide" },
+    { name: "Jakarta, Indonésie", profile: [6, 3, 8, 9, 9], category: "Tropical Humide" },
+    { name: "Singapour", profile: [6, 2, 7, 7, 9], category: "Tropical Humide" },
+
+    // ZONES À CYCLONES / OURAGANS
+    { name: "Miami, USA", profile: [8, 7, 6, 7, 9], category: "Zones à Cyclones" },
+    { name: "La Nouvelle-Orléans, USA", profile: [8, 8, 7, 6, 9], category: "Zones à Cyclones" },
+    { name: "Manille, Philippines", profile: [9, 8, 8, 8, 9], category: "Zones à Cyclones" },
+    { name: "La Havane, Cuba", profile: [7, 7, 7, 6, 9], category: "Zones à Cyclones" },
+    { name: "Cancún, Mexique", profile: [7, 6, 6, 5, 9], category: "Zones à Cyclones" },
+
+    // DÉSERT CHAUD
+    { name: "Sahara, Algérie", profile: [1, 4, 6, 1, 10], category: "Désert Chaud" },
+    { name: "Dubaï, EAU", profile: [1, 3, 6, 9, 10], category: "Désert Chaud" },
+    { name: "Phoenix, USA", profile: [1, 3, 6, 7, 10], category: "Désert Chaud" },
+    { name: "Riyad, Arabie Saoudite", profile: [1, 4, 6, 8, 10], category: "Désert Chaud" },
+    { name: "Alice Springs, Australie", profile: [1, 5, 6, 2, 9], category: "Désert Chaud" },
+
+    // PLAINES À TORNADES
+    { name: "Oklahoma City, USA", profile: [7, 8, 7, 5, 7], category: "Plaines à Tornades" },
+    { name: "Kansas, USA", profile: [7, 9, 7, 4, 7], category: "Plaines à Tornades" },
+    { name: "Dallas, USA", profile: [6, 8, 6, 6, 8], category: "Plaines à Tornades" },
+    { name: "Nebraska, USA", profile: [7, 7, 7, 3, 6], category: "Plaines à Tornades" },
+    { name: "Alberta, Canada", profile: [6, 7, 7, 2, 5], category: "Plaines à Tornades" },
+
+    // MÉGAPOLES POLLUÉES
+    { name: "Pékin, Chine", profile: [3, 2, 7, 9, 6], category: "Mégapoles Polluées" },
+    { name: "Delhi, Inde", profile: [4, 2, 6, 10, 9], category: "Mégapoles Polluées" },
+    { name: "Mexico City, Mexique", profile: [3, 2, 7, 8, 7], category: "Mégapoles Polluées" },
+    { name: "Los Angeles, USA", profile: [2, 2, 6, 7, 8], category: "Mégapoles Polluées" },
+    { name: "Le Caire, Égypte", profile: [1, 3, 6, 8, 9], category: "Mégapoles Polluées" },
+
+    // TEMPÉRÉ AGRICOLE / CAMPAGNE
+    { name: "Normandie, France", profile: [3, 4, 5, 3, 5], category: "Tempéré Agricole" },
+    { name: "Toscane, Italie", profile: [2, 3, 6, 4, 7], category: "Tempéré Agricole" },
+    { name: "Bavière, Allemagne", profile: [3, 3, 6, 4, 5], category: "Tempéré Agricole" },
+    { name: "Kyoto, Japon", profile: [4, 2, 7, 5, 6], category: "Tempéré Agricole" },
+    { name: "Nouvelle-Zélande rurale", profile: [3, 4, 6, 2, 6], category: "Tempéré Agricole" },
+
+    // MONTAGNE
+    { name: "Chamonix, France", profile: [4, 5, 7, 2, 3], category: "Montagne" },
+    { name: "Zermatt, Suisse", profile: [3, 4, 7, 1, 2], category: "Montagne" },
+    { name: "Kathmandu, Népal", profile: [5, 3, 6, 5, 6], category: "Montagne" },
+    { name: "La Paz, Bolivie", profile: [2, 4, 6, 5, 4], category: "Montagne" },
+    { name: "Aspen, USA", profile: [3, 5, 7, 3, 3], category: "Montagne" },
+
+    // TROPICAL PARADISIAQUE
+    { name: "Maldives", profile: [3, 2, 6, 1, 9], category: "Tropical Paradisiaque" },
+    { name: "Bora Bora", profile: [2, 2, 6, 1, 9], category: "Tropical Paradisiaque" },
+    { name: "Seychelles", profile: [4, 3, 6, 1, 9], category: "Tropical Paradisiaque" },
+    { name: "Hawaï", profile: [5, 4, 6, 3, 8], category: "Tropical Paradisiaque" },
+    { name: "Île Maurice", profile: [4, 3, 6, 4, 8], category: "Tropical Paradisiaque" }
+];
+
+// Calculate Euclidean distance between two arrays
+const calculateDistance = (arr1, arr2) => {
+    return Math.sqrt(
+        arr1.reduce((sum, val, idx) => {
+            return sum + Math.pow(val - arr2[idx], 2);
+        }, 0)
+    );
+};
+
+// Find the closest match
+let closestMatch = null;
+let smallestDistance = Infinity;
+
+locationDatabase.forEach(location => {
+    const distance = calculateDistance(this.finalChoice, location.profile);
+    if (distance < smallestDistance) {
+        smallestDistance = distance;
+        closestMatch = location;
+    }
+});
+
+// Log the result
+this.fancyLogger.logMessage("═══════════════════════════════════");
+this.fancyLogger.logMessage("YOUR CLIMATE MATCH:");
+this.fancyLogger.logMessage(`Location: ${closestMatch.name}`);
+this.fancyLogger.logMessage(`Category: ${closestMatch.category}`);
+this.fancyLogger.logMessage(`Your profile: [${this.finalChoice.join(', ')}]`);
+this.fancyLogger.logMessage(`Match profile: [${closestMatch.profile.join(', ')}]`);
+this.fancyLogger.logMessage(`Distance: ${smallestDistance.toFixed(2)}`);
+this.fancyLogger.logMessage("═══════════════════════════════════");
+
+// Store the result
+this.matchedLocation = closestMatch;
+this.matchDistance = smallestDistance;
+
+return closestMatch;
+}
   /**
    * override de _handleButtonLongPressed de TalkMachine
    * This is called on button RELEASE by the parent class if duration >= longPressDelay
