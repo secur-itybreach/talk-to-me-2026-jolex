@@ -78,9 +78,9 @@ export default class DialogMachine extends TalkMachine {
    */
   getCurrentLedArray() {
     const ledMapping = {
-      "1": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],      // Pair 1 (buttons 1&2): LEDs 0-9
-      "2": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19],  // Pair 2 (buttons 3&4): LEDs 10-19
-      "3": [20, 21, 22, 23, 24, 25, 26, 27, 28, 29]   // Pair 3 (buttons 5&6): LEDs 20-29
+      "1": [20, 21, 22, 23, 24, 25, 26, 27, 28, 29],      // Pair 1 (buttons 1&2): LEDs 0-9
+      "2": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],  // Pair 2 (buttons 3&4): LEDs 10-19
+      "3": [19,18,17,16,15,14,13,12,11,10]   // Pair 3 (buttons 5&6): LEDs 20-29
     };
     
     // Default to floor 1 if no ground pair is set
