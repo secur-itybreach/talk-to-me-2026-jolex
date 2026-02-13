@@ -69,6 +69,9 @@ export default class DialogMachine extends TalkMachine {
     this.button0PressCount = 0;
     this.button0FirstPressTime = null;
     this.button0MaxDuration = 3000; // 3 seconds max to press 4 times
+
+    // Case audio engine
+    this._initCaseAudioEngine();
   }
 
   /**
@@ -147,6 +150,10 @@ export default class DialogMachine extends TalkMachine {
       // Update the appropriate counter based on current state
       this._updateStateCounter("+");
 
+      if (this.nextState !== "choose-temperature") {
+        this._syncCaseAudioWithCurrentLed();
+      }
+
       this.fancyLogger.logMessage(
         `LED Stepper +: Local LED ${localIdx} turned ON`,
       );
@@ -164,6 +171,10 @@ export default class DialogMachine extends TalkMachine {
 
       // Update the appropriate counter based on current state
       this._updateStateCounter("-");
+
+      if (this.nextState !== "choose-temperature") {
+        this._syncCaseAudioWithCurrentLed();
+      }
 
       this.fancyLogger.logMessage(
         `LED Stepper -: Local LED ${localIdx} turned OFF`,
@@ -255,10 +266,223 @@ export default class DialogMachine extends TalkMachine {
     }
   }
 
+  _initCaseAudioEngine() {
+    const createTrack = (src, leds) => ({
+      src,
+      leds,
+      element: new Audio(src),
+    });
+
+    this.caseAudio = {
+      currentMode: null,
+      minVolume: 0.2,
+      fadeDurationMs: 180,
+      persistentSelections: {},
+      modes: {
+        rain: [
+          createTrack("audio/01-rain/1-4-rain.mp3", [0, 1, 2, 3]),
+          createTrack("audio/01-rain/5-8-rain.mp3", [4, 5, 6, 7]),
+          createTrack("audio/01-rain/9-rain.mp3", [8]),
+          createTrack("audio/01-rain/10-rain.mp3", [9]),
+        ],
+        wind: [
+          createTrack("audio/02-wind/1-3-wind.mp3", [0, 1, 2]),
+          createTrack("audio/02-wind/4-wind.mp3", [3]),
+          createTrack("audio/02-wind/5-6-wind.mp3", [4, 5]),
+          createTrack("audio/02-wind/7-9-wind.mp3", [6, 7, 8, 9]),
+        ],
+        hour: [
+          createTrack("audio/03-hour/1-wolf.mp3", [0]),
+          createTrack("audio/03-hour/2-owl.mp3", [1]),
+          createTrack("audio/03-hour/3-poulet.mp3", [2]),
+          createTrack("audio/03-hour/4-dog.mp3", [3]),
+          createTrack("audio/03-hour/5-cow.mp3", [4]),
+          createTrack("audio/03-hour/6-horse.mp3", [5]),
+          createTrack("audio/03-hour/7-cigale.mp3", [6]),
+          createTrack("audio/03-hour/8-sheep.mp3", [7]),
+          createTrack("audio/03-hour/9-cat.mp3", [8]),
+          createTrack("audio/03-hour/10-frog.mp3", [9]),
+        ],
+        pollution: [
+          createTrack("audio/04-pollution/1-2-pollution.mp3", [0, 1]),
+          createTrack("audio/04-pollution/3-pollution.mp3", [2]),
+          createTrack("audio/04-pollution/4-pollution.mp3", [3]),
+          createTrack("audio/04-pollution/5-pollution.mp3", [4]),
+          createTrack("audio/04-pollution/6-pollution.mp3", [5]),
+          createTrack("audio/04-pollution/7-pollution.mp3", [6]),
+          createTrack("audio/04-pollution/8-pollution.mp3", [7]),
+          createTrack("audio/04-pollution/9-10-pollution.mp3", [8, 9]),
+        ],
+      },
+    };
+
+    Object.values(this.caseAudio.modes)
+      .flat()
+      .forEach((track) => {
+        track.element.loop = true;
+        track.element.volume = 0;
+        track.element.preload = "auto";
+      });
+  }
+
+  _setTrackVolume(track, volume) {
+    track.element.volume = Math.max(0, Math.min(1, volume));
+  }
+
+  _cancelTrackFade(track) {
+    if (track.fadeRafId) {
+      cancelAnimationFrame(track.fadeRafId);
+      track.fadeRafId = null;
+    }
+  }
+
+  _fadeTrackToVolume(
+    track,
+    targetVolume,
+    durationMs = this.caseAudio.fadeDurationMs,
+  ) {
+    const target = Math.max(0, Math.min(1, targetVolume));
+    const start = track.element.volume;
+
+    if (Math.abs(start - target) < 0.01 || durationMs <= 0) {
+      this._setTrackVolume(track, target);
+      return;
+    }
+
+    this._cancelTrackFade(track);
+
+    const startTime = performance.now();
+    const step = (now) => {
+      const progress = Math.min(1, (now - startTime) / durationMs);
+      const nextVolume = start + (target - start) * progress;
+      this._setTrackVolume(track, nextVolume);
+
+      if (progress < 1) {
+        track.fadeRafId = requestAnimationFrame(step);
+      } else {
+        track.fadeRafId = null;
+      }
+    };
+
+    track.fadeRafId = requestAnimationFrame(step);
+  }
+
+  _playTrackIfNeeded(track) {
+    if (!track.element.paused) return;
+    track.element.play().catch(() => {
+      // Browser autoplay policy can block until user interaction
+    });
+  }
+
+  _pauseTrack(track) {
+    this._cancelTrackFade(track);
+    track.element.pause();
+    track.element.currentTime = 0;
+    this._setTrackVolume(track, 0);
+  }
+
+  _activateCaseAudioMode(modeKey) {
+    if (!this.caseAudio) return;
+
+    if (!modeKey) {
+      this._stopAllCaseAudio();
+      return;
+    }
+
+    const tracks = this.caseAudio.modes[modeKey] || [];
+    tracks.forEach((track) => {
+      this._setTrackVolume(track, 0);
+      this._playTrackIfNeeded(track);
+    });
+
+    this.caseAudio.currentMode = modeKey;
+    this._syncCaseAudioWithCurrentLed();
+  }
+
+  _stopAllCaseAudio() {
+    if (!this.caseAudio) return;
+
+    Object.values(this.caseAudio.modes)
+      .flat()
+      .forEach((track) => this._pauseTrack(track));
+
+    this.caseAudio.currentMode = null;
+    this.caseAudio.persistentSelections = {};
+  }
+
+  _getLedVolumeWithinTrack(position, trackLength) {
+    if (trackLength <= 1) return 1;
+    const step = (1 - this.caseAudio.minVolume) / (trackLength - 1);
+    return this.caseAudio.minVolume + position * step;
+  }
+
+  _syncCaseAudioWithCurrentLed() {
+    if (!this.caseAudio || !this.caseAudio.currentMode) return;
+
+    const currentModeTracks =
+      this.caseAudio.modes[this.caseAudio.currentMode] || [];
+    const allTracks = Object.values(this.caseAudio.modes).flat();
+    const activeLocalLed = this.localLedStates.lastIndexOf(1);
+
+    let activeTrack = null;
+    let activeTrackVolume = 0;
+
+    if (activeLocalLed !== -1) {
+      activeTrack = currentModeTracks.find((track) =>
+        track.leds.includes(activeLocalLed),
+      );
+
+      if (activeTrack) {
+        const ledPosition = activeTrack.leds.indexOf(activeLocalLed);
+        activeTrackVolume = this._getLedVolumeWithinTrack(
+          ledPosition,
+          activeTrack.leds.length,
+        );
+      }
+    }
+
+    if (activeTrack) {
+      this.caseAudio.persistentSelections[this.caseAudio.currentMode] = {
+        track: activeTrack,
+        volume: activeTrackVolume,
+      };
+    } else {
+      delete this.caseAudio.persistentSelections[this.caseAudio.currentMode];
+    }
+
+    const targetByTrack = new Map();
+
+    Object.entries(this.caseAudio.persistentSelections).forEach(
+      ([modeKey, selection]) => {
+        if (modeKey !== this.caseAudio.currentMode && selection?.track) {
+          targetByTrack.set(selection.track, selection.volume);
+        }
+      },
+    );
+
+    currentModeTracks.forEach((track) => {
+      const target = track === activeTrack ? activeTrackVolume : 0;
+      targetByTrack.set(track, target);
+    });
+
+    allTracks.forEach((track) => {
+      const target = targetByTrack.get(track) || 0;
+      const isCurrentModeTrack = currentModeTracks.includes(track);
+
+      if (isCurrentModeTrack || target > 0) {
+        this._playTrackIfNeeded(track);
+      }
+
+      this._fadeTrackToVolume(track, target);
+    });
+  }
+
   /* CONTRÔLE DU DIALOGUE */
   startDialog() {
     this.dialogStarted = true;
     this.waitingForUserInput = true;
+
+    this._stopAllCaseAudio();
 
     // éteindre toutes les LEDs (black)
     this.ledsAllOff();
@@ -333,6 +557,7 @@ export default class DialogMachine extends TalkMachine {
     switch (this.nextState) {
       case "initialisation":
         // CONCEPT DE DIALOGUE: État de configuration - prépare le système avant l'interaction
+        this._stopAllCaseAudio();
         this.ledsAllOff();
         this.nextState = "waiting-for-ground"; // Wait for button pairs 1&2, 3&4, or 5&6
         this.fancyLogger.logMessage(
@@ -344,6 +569,7 @@ export default class DialogMachine extends TalkMachine {
       case "waiting-for-ground":
         // This state is waiting for a long press on button pairs 1&2, 3&4, or 5&6
         // The logic is handled in _handleButtonLongPressedImmediate
+        this._stopAllCaseAudio();
         this.fancyLogger.logMessage(
           "Waiting for long press on button pairs (1&2, 3&4, or 5&6)...",
         );
@@ -361,6 +587,7 @@ export default class DialogMachine extends TalkMachine {
 
       case "choose-rain":
         // CONCEPT: User is in "rain" mode with current button held
+        this._activateCaseAudioMode("rain");
         this.fancyLogger.logMessage(
           `Choose rain mode - current button: ${this.currentGroundButton}`,
         );
@@ -382,6 +609,7 @@ export default class DialogMachine extends TalkMachine {
 
       case "choose-wind":
         // CONCEPT: User switched to another ground button
+        this._activateCaseAudioMode("wind");
         this.fancyLogger.logMessage(
           `Switched to wind mode - new button: ${this.currentGroundButton}`,
         );
@@ -401,6 +629,7 @@ export default class DialogMachine extends TalkMachine {
 
       case "choose-hour":
         // CONCEPT: User switched to hour mode
+        this._activateCaseAudioMode("hour");
         this.fancyLogger.logMessage(
           `Switched to hour mode - new button: ${this.currentGroundButton}`,
         );
@@ -420,6 +649,7 @@ export default class DialogMachine extends TalkMachine {
 
       case "choose-pollution":
         // CONCEPT: User switched to pollution mode
+        this._activateCaseAudioMode("pollution");
         this.fancyLogger.logMessage(
           `Switched to pollution mode - new button: ${this.currentGroundButton}`,
         );
@@ -456,6 +686,7 @@ export default class DialogMachine extends TalkMachine {
 
       case "summary":
         // CONCEPT: Display all collected parameters and wait for 4 presses of button 0
+        this._stopAllCaseAudio();
         this.fancyLogger.logMessage("═══════════════════════════════════");
         this.fancyLogger.logMessage("SUMMARY OF YOUR SELECTIONS:");
         this.fancyLogger.logMessage(`Rain Count: ${this.rainCount}/10`);
@@ -485,6 +716,7 @@ export default class DialogMachine extends TalkMachine {
 
       case "final":
         // CONCEPT: Final state after successful button 0 sequence
+        this._stopAllCaseAudio();
         this.fancyLogger.logMessage("═══════════════════════════════════");
         this.fancyLogger.logMessage("🎉 CONGRATULATIONS! 🎉");
         this.fancyLogger.logMessage("You have completed the dialog!");
@@ -657,6 +889,13 @@ export default class DialogMachine extends TalkMachine {
 
   _handleButtonPressed(button, simulated = false) {
     this.buttonStates[button] = 1;
+
+    if (
+      this.caseAudio?.currentMode &&
+      this.nextState !== "choose-temperature"
+    ) {
+      this._syncCaseAudioWithCurrentLed();
+    }
 
     // DEBUG: Buttons 7, 8, 9 simulate pair long-presses
     if (button === "7" && this.waitingForUserInput) {
@@ -963,125 +1202,321 @@ export default class DialogMachine extends TalkMachine {
     }
   }
   findClosestLocation() {
-// Create the final choice array
-this.finalChoice = [
-this.rainCount,
-this.windCount,
-this.hourCount,
-this.pollutionCount,
-this.temperatureCount
-];
+    // Create the final choice array
+    this.finalChoice = [
+      this.rainCount,
+      this.windCount,
+      this.hourCount,
+      this.pollutionCount,
+      this.temperatureCount,
+    ];
 
-// Database of locations with their climate profiles
-const locationDatabase = [
-    // FROID POLAIRE / SUBPOLAIRE
-    { name: "McMurdo, Antarctique", profile: [1, 3, 9, 1, 1], category: "Froid Polaire" },
-    { name: "Vostok, Antarctique", profile: [1, 2, 10, 1, 1], category: "Froid Polaire" },
-    { name: "Longyearbyen, Svalbard", profile: [2, 4, 9, 1, 2], category: "Froid Polaire" },
-    { name: "Reykjavik, Islande", profile: [4, 5, 8, 2, 3], category: "Froid Polaire" },
-    { name: "Nuuk, Groenland", profile: [3, 5, 9, 1, 2], category: "Froid Polaire" },
+    // Database of locations with their climate profiles
+    const locationDatabase = [
+      // FROID POLAIRE / SUBPOLAIRE
+      {
+        name: "McMurdo, Antarctique",
+        profile: [1, 3, 9, 1, 1],
+        category: "Froid Polaire",
+      },
+      {
+        name: "Vostok, Antarctique",
+        profile: [1, 2, 10, 1, 1],
+        category: "Froid Polaire",
+      },
+      {
+        name: "Longyearbyen, Svalbard",
+        profile: [2, 4, 9, 1, 2],
+        category: "Froid Polaire",
+      },
+      {
+        name: "Reykjavik, Islande",
+        profile: [4, 5, 8, 2, 3],
+        category: "Froid Polaire",
+      },
+      {
+        name: "Nuuk, Groenland",
+        profile: [3, 5, 9, 1, 2],
+        category: "Froid Polaire",
+      },
 
-    // OCÉANIQUE / PLUVIEUX
-    { name: "Bergen, Norvège", profile: [6, 4, 7, 2, 4], category: "Océanique" },
-    { name: "Vancouver, Canada", profile: [4, 3, 7, 3, 5], category: "Océanique" },
-    { name: "Seattle, USA", profile: [4, 3, 7, 5, 5], category: "Océanique" },
-    { name: "Dublin, Irlande", profile: [3, 4, 8, 4, 5], category: "Océanique" },
-    { name: "Wellington, NZ", profile: [5, 6, 8, 3, 6], category: "Océanique" },
+      // OCÉANIQUE / PLUVIEUX
+      {
+        name: "Bergen, Norvège",
+        profile: [6, 4, 7, 2, 4],
+        category: "Océanique",
+      },
+      {
+        name: "Vancouver, Canada",
+        profile: [4, 3, 7, 3, 5],
+        category: "Océanique",
+      },
+      { name: "Seattle, USA", profile: [4, 3, 7, 5, 5], category: "Océanique" },
+      {
+        name: "Dublin, Irlande",
+        profile: [3, 4, 8, 4, 5],
+        category: "Océanique",
+      },
+      {
+        name: "Wellington, NZ",
+        profile: [5, 6, 8, 3, 6],
+        category: "Océanique",
+      },
 
-    // TROPICAL HUMIDE / ORAGEUX
-    { name: "Amazonas, Brésil", profile: [8, 3, 6, 2, 8], category: "Tropical Humide" },
-    { name: "Manaus, Brésil", profile: [7, 2, 6, 6, 8], category: "Tropical Humide" },
-    { name: "Bangkok, Thaïlande", profile: [7, 2, 7, 8, 9], category: "Tropical Humide" },
-    { name: "Jakarta, Indonésie", profile: [6, 3, 8, 9, 9], category: "Tropical Humide" },
-    { name: "Singapour", profile: [6, 2, 7, 7, 9], category: "Tropical Humide" },
+      // TROPICAL HUMIDE / ORAGEUX
+      {
+        name: "Amazonas, Brésil",
+        profile: [8, 3, 6, 2, 8],
+        category: "Tropical Humide",
+      },
+      {
+        name: "Manaus, Brésil",
+        profile: [7, 2, 6, 6, 8],
+        category: "Tropical Humide",
+      },
+      {
+        name: "Bangkok, Thaïlande",
+        profile: [7, 2, 7, 8, 9],
+        category: "Tropical Humide",
+      },
+      {
+        name: "Jakarta, Indonésie",
+        profile: [6, 3, 8, 9, 9],
+        category: "Tropical Humide",
+      },
+      {
+        name: "Singapour",
+        profile: [6, 2, 7, 7, 9],
+        category: "Tropical Humide",
+      },
 
-    // ZONES À CYCLONES / OURAGANS
-    { name: "Miami, USA", profile: [8, 7, 6, 7, 9], category: "Zones à Cyclones" },
-    { name: "La Nouvelle-Orléans, USA", profile: [8, 8, 7, 6, 9], category: "Zones à Cyclones" },
-    { name: "Manille, Philippines", profile: [9, 8, 8, 8, 9], category: "Zones à Cyclones" },
-    { name: "La Havane, Cuba", profile: [7, 7, 7, 6, 9], category: "Zones à Cyclones" },
-    { name: "Cancún, Mexique", profile: [7, 6, 6, 5, 9], category: "Zones à Cyclones" },
+      // ZONES À CYCLONES / OURAGANS
+      {
+        name: "Miami, USA",
+        profile: [8, 7, 6, 7, 9],
+        category: "Zones à Cyclones",
+      },
+      {
+        name: "La Nouvelle-Orléans, USA",
+        profile: [8, 8, 7, 6, 9],
+        category: "Zones à Cyclones",
+      },
+      {
+        name: "Manille, Philippines",
+        profile: [9, 8, 8, 8, 9],
+        category: "Zones à Cyclones",
+      },
+      {
+        name: "La Havane, Cuba",
+        profile: [7, 7, 7, 6, 9],
+        category: "Zones à Cyclones",
+      },
+      {
+        name: "Cancún, Mexique",
+        profile: [7, 6, 6, 5, 9],
+        category: "Zones à Cyclones",
+      },
 
-    // DÉSERT CHAUD
-    { name: "Sahara, Algérie", profile: [1, 4, 6, 1, 10], category: "Désert Chaud" },
-    { name: "Dubaï, EAU", profile: [1, 3, 6, 9, 10], category: "Désert Chaud" },
-    { name: "Phoenix, USA", profile: [1, 3, 6, 7, 10], category: "Désert Chaud" },
-    { name: "Riyad, Arabie Saoudite", profile: [1, 4, 6, 8, 10], category: "Désert Chaud" },
-    { name: "Alice Springs, Australie", profile: [1, 5, 6, 2, 9], category: "Désert Chaud" },
+      // DÉSERT CHAUD
+      {
+        name: "Sahara, Algérie",
+        profile: [1, 4, 6, 1, 10],
+        category: "Désert Chaud",
+      },
+      {
+        name: "Dubaï, EAU",
+        profile: [1, 3, 6, 9, 10],
+        category: "Désert Chaud",
+      },
+      {
+        name: "Phoenix, USA",
+        profile: [1, 3, 6, 7, 10],
+        category: "Désert Chaud",
+      },
+      {
+        name: "Riyad, Arabie Saoudite",
+        profile: [1, 4, 6, 8, 10],
+        category: "Désert Chaud",
+      },
+      {
+        name: "Alice Springs, Australie",
+        profile: [1, 5, 6, 2, 9],
+        category: "Désert Chaud",
+      },
 
-    // PLAINES À TORNADES
-    { name: "Oklahoma City, USA", profile: [7, 8, 7, 5, 7], category: "Plaines à Tornades" },
-    { name: "Kansas, USA", profile: [7, 9, 7, 4, 7], category: "Plaines à Tornades" },
-    { name: "Dallas, USA", profile: [6, 8, 6, 6, 8], category: "Plaines à Tornades" },
-    { name: "Nebraska, USA", profile: [7, 7, 7, 3, 6], category: "Plaines à Tornades" },
-    { name: "Alberta, Canada", profile: [6, 7, 7, 2, 5], category: "Plaines à Tornades" },
+      // PLAINES À TORNADES
+      {
+        name: "Oklahoma City, USA",
+        profile: [7, 8, 7, 5, 7],
+        category: "Plaines à Tornades",
+      },
+      {
+        name: "Kansas, USA",
+        profile: [7, 9, 7, 4, 7],
+        category: "Plaines à Tornades",
+      },
+      {
+        name: "Dallas, USA",
+        profile: [6, 8, 6, 6, 8],
+        category: "Plaines à Tornades",
+      },
+      {
+        name: "Nebraska, USA",
+        profile: [7, 7, 7, 3, 6],
+        category: "Plaines à Tornades",
+      },
+      {
+        name: "Alberta, Canada",
+        profile: [6, 7, 7, 2, 5],
+        category: "Plaines à Tornades",
+      },
 
-    // MÉGAPOLES POLLUÉES
-    { name: "Pékin, Chine", profile: [3, 2, 7, 9, 6], category: "Mégapoles Polluées" },
-    { name: "Delhi, Inde", profile: [4, 2, 6, 10, 9], category: "Mégapoles Polluées" },
-    { name: "Mexico City, Mexique", profile: [3, 2, 7, 8, 7], category: "Mégapoles Polluées" },
-    { name: "Los Angeles, USA", profile: [2, 2, 6, 7, 8], category: "Mégapoles Polluées" },
-    { name: "Le Caire, Égypte", profile: [1, 3, 6, 8, 9], category: "Mégapoles Polluées" },
+      // MÉGAPOLES POLLUÉES
+      {
+        name: "Pékin, Chine",
+        profile: [3, 2, 7, 9, 6],
+        category: "Mégapoles Polluées",
+      },
+      {
+        name: "Delhi, Inde",
+        profile: [4, 2, 6, 10, 9],
+        category: "Mégapoles Polluées",
+      },
+      {
+        name: "Mexico City, Mexique",
+        profile: [3, 2, 7, 8, 7],
+        category: "Mégapoles Polluées",
+      },
+      {
+        name: "Los Angeles, USA",
+        profile: [2, 2, 6, 7, 8],
+        category: "Mégapoles Polluées",
+      },
+      {
+        name: "Le Caire, Égypte",
+        profile: [1, 3, 6, 8, 9],
+        category: "Mégapoles Polluées",
+      },
 
-    // TEMPÉRÉ AGRICOLE / CAMPAGNE
-    { name: "Normandie, France", profile: [3, 4, 5, 3, 5], category: "Tempéré Agricole" },
-    { name: "Toscane, Italie", profile: [2, 3, 6, 4, 7], category: "Tempéré Agricole" },
-    { name: "Bavière, Allemagne", profile: [3, 3, 6, 4, 5], category: "Tempéré Agricole" },
-    { name: "Kyoto, Japon", profile: [4, 2, 7, 5, 6], category: "Tempéré Agricole" },
-    { name: "Nouvelle-Zélande rurale", profile: [3, 4, 6, 2, 6], category: "Tempéré Agricole" },
+      // TEMPÉRÉ AGRICOLE / CAMPAGNE
+      {
+        name: "Normandie, France",
+        profile: [3, 4, 5, 3, 5],
+        category: "Tempéré Agricole",
+      },
+      {
+        name: "Toscane, Italie",
+        profile: [2, 3, 6, 4, 7],
+        category: "Tempéré Agricole",
+      },
+      {
+        name: "Bavière, Allemagne",
+        profile: [3, 3, 6, 4, 5],
+        category: "Tempéré Agricole",
+      },
+      {
+        name: "Kyoto, Japon",
+        profile: [4, 2, 7, 5, 6],
+        category: "Tempéré Agricole",
+      },
+      {
+        name: "Nouvelle-Zélande rurale",
+        profile: [3, 4, 6, 2, 6],
+        category: "Tempéré Agricole",
+      },
 
-    // MONTAGNE
-    { name: "Chamonix, France", profile: [4, 5, 7, 2, 3], category: "Montagne" },
-    { name: "Zermatt, Suisse", profile: [3, 4, 7, 1, 2], category: "Montagne" },
-    { name: "Kathmandu, Népal", profile: [5, 3, 6, 5, 6], category: "Montagne" },
-    { name: "La Paz, Bolivie", profile: [2, 4, 6, 5, 4], category: "Montagne" },
-    { name: "Aspen, USA", profile: [3, 5, 7, 3, 3], category: "Montagne" },
+      // MONTAGNE
+      {
+        name: "Chamonix, France",
+        profile: [4, 5, 7, 2, 3],
+        category: "Montagne",
+      },
+      {
+        name: "Zermatt, Suisse",
+        profile: [3, 4, 7, 1, 2],
+        category: "Montagne",
+      },
+      {
+        name: "Kathmandu, Népal",
+        profile: [5, 3, 6, 5, 6],
+        category: "Montagne",
+      },
+      {
+        name: "La Paz, Bolivie",
+        profile: [2, 4, 6, 5, 4],
+        category: "Montagne",
+      },
+      { name: "Aspen, USA", profile: [3, 5, 7, 3, 3], category: "Montagne" },
 
-    // TROPICAL PARADISIAQUE
-    { name: "Maldives", profile: [3, 2, 6, 1, 9], category: "Tropical Paradisiaque" },
-    { name: "Bora Bora", profile: [2, 2, 6, 1, 9], category: "Tropical Paradisiaque" },
-    { name: "Seychelles", profile: [4, 3, 6, 1, 9], category: "Tropical Paradisiaque" },
-    { name: "Hawaï", profile: [5, 4, 6, 3, 8], category: "Tropical Paradisiaque" },
-    { name: "Île Maurice", profile: [4, 3, 6, 4, 8], category: "Tropical Paradisiaque" }
-];
+      // TROPICAL PARADISIAQUE
+      {
+        name: "Maldives",
+        profile: [3, 2, 6, 1, 9],
+        category: "Tropical Paradisiaque",
+      },
+      {
+        name: "Bora Bora",
+        profile: [2, 2, 6, 1, 9],
+        category: "Tropical Paradisiaque",
+      },
+      {
+        name: "Seychelles",
+        profile: [4, 3, 6, 1, 9],
+        category: "Tropical Paradisiaque",
+      },
+      {
+        name: "Hawaï",
+        profile: [5, 4, 6, 3, 8],
+        category: "Tropical Paradisiaque",
+      },
+      {
+        name: "Île Maurice",
+        profile: [4, 3, 6, 4, 8],
+        category: "Tropical Paradisiaque",
+      },
+    ];
 
-// Calculate Euclidean distance between two arrays
-const calculateDistance = (arr1, arr2) => {
-    return Math.sqrt(
+    // Calculate Euclidean distance between two arrays
+    const calculateDistance = (arr1, arr2) => {
+      return Math.sqrt(
         arr1.reduce((sum, val, idx) => {
-            return sum + Math.pow(val - arr2[idx], 2);
-        }, 0)
-    );
-};
+          return sum + Math.pow(val - arr2[idx], 2);
+        }, 0),
+      );
+    };
 
-// Find the closest match
-let closestMatch = null;
-let smallestDistance = Infinity;
+    // Find the closest match
+    let closestMatch = null;
+    let smallestDistance = Infinity;
 
-locationDatabase.forEach(location => {
-    const distance = calculateDistance(this.finalChoice, location.profile);
-    if (distance < smallestDistance) {
+    locationDatabase.forEach((location) => {
+      const distance = calculateDistance(this.finalChoice, location.profile);
+      if (distance < smallestDistance) {
         smallestDistance = distance;
         closestMatch = location;
-    }
-});
+      }
+    });
 
-// Log the result
-this.fancyLogger.logMessage("═══════════════════════════════════");
-this.fancyLogger.logMessage("YOUR CLIMATE MATCH:");
-this.fancyLogger.logMessage(`Location: ${closestMatch.name}`);
-this.fancyLogger.logMessage(`Category: ${closestMatch.category}`);
-this.fancyLogger.logMessage(`Your profile: [${this.finalChoice.join(', ')}]`);
-this.fancyLogger.logMessage(`Match profile: [${closestMatch.profile.join(', ')}]`);
-this.fancyLogger.logMessage(`Distance: ${smallestDistance.toFixed(2)}`);
-this.fancyLogger.logMessage("═══════════════════════════════════");
+    // Log the result
+    this.fancyLogger.logMessage("═══════════════════════════════════");
+    this.fancyLogger.logMessage("YOUR CLIMATE MATCH:");
+    this.fancyLogger.logMessage(`Location: ${closestMatch.name}`);
+    this.fancyLogger.logMessage(`Category: ${closestMatch.category}`);
+    this.fancyLogger.logMessage(
+      `Your profile: [${this.finalChoice.join(", ")}]`,
+    );
+    this.fancyLogger.logMessage(
+      `Match profile: [${closestMatch.profile.join(", ")}]`,
+    );
+    this.fancyLogger.logMessage(`Distance: ${smallestDistance.toFixed(2)}`);
+    this.fancyLogger.logMessage("═══════════════════════════════════");
 
-// Store the result
-this.matchedLocation = closestMatch;
-this.matchDistance = smallestDistance;
+    // Store the result
+    this.matchedLocation = closestMatch;
+    this.matchDistance = smallestDistance;
 
-return closestMatch;
-}
+    return closestMatch;
+  }
   /**
    * override de _handleButtonLongPressed de TalkMachine
    * This is called on button RELEASE by the parent class if duration >= longPressDelay
