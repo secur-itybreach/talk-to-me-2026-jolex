@@ -33,9 +33,16 @@ export default class DialogMachine extends TalkMachine {
     // Tracking for long-press dialog logic with button pairs
     this.currentGroundPair = null; // Tracks which pair (1, 2, or 3) is currently active
     this.lastGroundPair = null; // Tracks the last pair that completed a long press
-    this.longPressThreshold = 3000; // 3 seconds in milliseconds
+    this.longPressThreshold = 1500;
     this.pairPressTimers = {}; // Tracks timers for each pair
     this.longPressTriggered = {}; // Tracks if long press already triggered for each pair
+
+    this.finalSpeechPhase = 0; // 0=idle, 1=waiting after "Analyse...", 2=done
+    this.finalMatchedLocation = null;
+
+    this.speechQueue = [];
+    this.speechQueueActive = false;
+    this.ledFadeControllers = new Map();
 
     // Button pair definitions: pair 1 = buttons 1&2, pair 2 = buttons 3&4, pair 3 = buttons 5&6
     this.buttonPairs = {
@@ -70,6 +77,121 @@ export default class DialogMachine extends TalkMachine {
     this.button0FirstPressTime = null;
     this.button0MaxDuration = 3000; // 3 seconds max to press 4 times
 
+    this.rainDescriptions = [
+      "un temps sec",
+      "une faible bruine",
+      "une faible pluie",
+      "une pluie modérée",
+      "une forte pluie",
+      "une pluie intense",
+      "un faible orage",
+      "une orage moderé",
+      "un orage violent",
+      "un déluge",
+    ];
+
+    this.windDescriptions = [
+      "un calme plat",
+      "une legère brise",
+      "une bonne brise",
+      "un vent modéré",
+      "un vent fort",
+      "un vent violent",
+      "une tempête modérée",
+      "une tempête intense",
+      "une tempête dévastatrice",
+      "un ouragan",
+    ];
+
+    this.hourDescriptions = [
+      "minuit",
+      "deux heures du matin",
+      "cinq heures du matin",
+      "sept heures du matin",
+      "neuf heures trente du matin",
+      "midi",
+      "quatorze heure trente",
+      "dix-sept heure",
+      "dix-neuf heure",
+      "vingt-et-une heure trente",
+    ];
+
+    this.pollutionDescriptions = [
+      "un air pur",
+      "un air excellent",
+      "un air de bonne qualité",
+      "un air acceptable",
+      "un air médiocre",
+      "un air dégradé",
+      "un air mauvais",
+      "un air très mauvais",
+      "un air extrêmement mauvais",
+      "un air dangereux",
+    ];
+
+    this.temperatureDescriptions = [
+      "un froid glacial",
+      "un froid intense",
+      "un grand froid",
+      "un temps froid",
+      "un temps frais",
+      "un temps doux",
+      "un temps agréable",
+      "un temps chaud",
+      "une forte chaleur",
+      "une chaleur extrême",
+    ];
+
+    this.rainColors = [
+      [85, 211, 255],
+      [70, 188, 242],
+      [60, 164, 229],
+      [50, 141, 216],
+      [45, 117, 203],
+      [30, 94, 190],
+      [20, 70, 177],
+      [10, 47, 164],
+      [7, 23, 151],
+      [1, 5, 50],
+    ];
+    this.hourColors = [
+      [3, 6, 45],
+      [85, 25, 175],
+      [222, 44, 44],
+      [255, 101, 33],
+      [255, 120, 60],
+      [255, 120, 60],
+      [255, 101, 33],
+      [222, 44, 44],
+      [85, 25, 175],
+      [3, 6, 45],
+    ];
+
+    this.pollutionColors = [
+      [245, 245, 245],
+      [200, 199, 196],
+      [150, 148, 142],
+      [110, 105, 95],
+      [80, 72, 55],
+      [55, 48, 32],
+      [35, 30, 18],
+      [20, 17, 9],
+      [12, 10, 5],
+      [6, 5, 2],
+    ];
+    this.temperatureColors = [
+      [0, 20, 120],
+      [0, 60, 180],
+      [0, 100, 220],
+      [40, 140, 220],
+      [80, 170, 200],
+      [140, 185, 140],
+      [200, 180, 90],
+      [255, 140, 50],
+      [255, 90, 40],
+      [200, 30, 20],
+    ];
+
     // Case audio engine
     this._initCaseAudioEngine();
   }
@@ -91,6 +213,110 @@ export default class DialogMachine extends TalkMachine {
 
     // Default to floor 1 if no ground pair is set
     return ledMapping[this.currentGroundPair] || ledMapping["1"];
+  }
+
+  async animateGroundActivation(pairNumber) {
+    const ledMapping = {
+      1: [20, 21, 22, 23, 24, 25, 26, 27, 28, 29],
+      2: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+      3: [19, 18, 17, 16, 15, 14, 13, 12, 11, 10],
+    };
+
+    const ledArray = ledMapping[pairNumber];
+    if (!ledArray) return;
+
+    const stepDelayMs = 80;
+    const fadeInMs = 80;
+    const fadeOutMs = 80;
+    const holdMs = 90;
+    const onColor = [255, 255, 255];
+    const offColor = [0, 0, 0];
+    const localCenterOutPairs = [
+      [4, 5],
+      [3, 6],
+      [2, 7],
+      [1, 8],
+      [0, 9],
+    ];
+    const orderedLeds = localCenterOutPairs.flatMap((pair) =>
+      pair.map((localIndex) => ledArray[localIndex]),
+    );
+
+    orderedLeds.forEach((idx) => this.ledChangeRGB(idx, 0, 0, 0));
+
+    for (let i = 0; i < localCenterOutPairs.length; i++) {
+      const [leftLocal, rightLocal] = localCenterOutPairs[i];
+      const leftIdx = ledArray[leftLocal];
+      const rightIdx = ledArray[rightLocal];
+
+      this._fadeLedRGB(leftIdx, offColor, onColor, fadeInMs);
+      this._fadeLedRGB(rightIdx, offColor, onColor, fadeInMs);
+      await new Promise((resolve) => setTimeout(resolve, stepDelayMs));
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, holdMs));
+
+    await Promise.all(
+      orderedLeds.map((idx) =>
+        this._fadeLedRGB(idx, onColor, offColor, fadeOutMs),
+      ),
+    );
+
+    orderedLeds.forEach((idx) => this.ledChangeRGB(idx, 0, 0, 0));
+  }
+
+  _isSelectionState(state = this.nextState) {
+    return (
+      state === "choose-rain" ||
+      state === "choose-wind" ||
+      state === "choose-hour" ||
+      state === "choose-pollution" ||
+      state === "choose-temperature"
+    );
+  }
+
+  async animateAllLedsLoading(times = 3) {
+    const stepDelayMs = 35;
+    const tailOffMs = 120;
+
+    for (let t = 0; t < times; t++) {
+      this._allLedsOff();
+
+      for (let i = 0; i < this.maxLeds; i++) {
+        this._allLedsOff();
+        this.ledChangeRGB(i, 255, 255, 255);
+        await new Promise((resolve) => setTimeout(resolve, stepDelayMs));
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, tailOffMs));
+    }
+
+    this._allLedsOff();
+  }
+
+  async animateGroundArraysLoading(times = 3) {
+    const stepDelayMs = 80;
+    const cycleDelayMs = 200;
+
+    const ground1 = [20, 21, 22, 23, 24, 25, 26, 27, 28, 29];
+    const ground2 = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    const ground3 = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
+
+    for (let t = 0; t < times; t++) {
+      this._allLedsOff();
+
+      for (let i = 0; i < 10; i++) {
+        this.ledChangeRGB(ground2[i], 255, 255, 255);
+        this.ledChangeRGB(ground3[9 - i], 255, 255, 255);
+        this.ledChangeRGB(ground1[i], 255, 255, 255);
+
+        await new Promise((resolve) => setTimeout(resolve, stepDelayMs));
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, cycleDelayMs));
+    }
+
+    this._allLedsOff();
   }
 
   /**
@@ -141,13 +367,12 @@ export default class DialogMachine extends TalkMachine {
     if (action === "+") {
       // Find first black LED in local array (0-9)
       const localIdx = this.localLedStates.findIndex((s) => s === 0);
-      if (localIdx === -1) return; // All LEDs are already white
+      if (localIdx === -1) return;
 
-      // Turn on this local LED
       this.localLedStates[localIdx] = 1;
-      this.lightUpLocalLed(localIdx, 255, 255, 255); // White
+      const [r, g, b] = this._getColorForState(localIdx);
+      this.lightUpLocalLed(localIdx, r, g, b);
 
-      // Update the appropriate counter based on current state
       this._updateStateCounter("+");
 
       if (this.nextState !== "choose-temperature") {
@@ -155,7 +380,7 @@ export default class DialogMachine extends TalkMachine {
       }
 
       this.fancyLogger.logMessage(
-        `LED Stepper +: Local LED ${localIdx} turned ON`,
+        `LED Stepper +: Local LED ${localIdx} turned ON with color [${r}, ${g}, ${b}]`,
       );
       return;
     }
@@ -182,6 +407,95 @@ export default class DialogMachine extends TalkMachine {
       console.log(`[local-led-stepper] action=${action} localLedStates=`, [
         ...this.localLedStates,
       ]);
+    }
+  }
+
+  _getColorForState(localIdx) {
+    if (this.nextState === "choose-wind") return [255, 255, 255];
+    if (this.nextState === "choose-rain") {
+      return this.rainColors[localIdx] || [255, 255, 255];
+    }
+    if (this.nextState === "choose-hour") {
+      return this.hourColors[localIdx] || [255, 255, 255];
+    }
+    if (this.nextState === "choose-pollution") {
+      return this.pollutionColors[localIdx] || [255, 255, 255];
+    }
+    if (this.nextState === "choose-temperature") {
+      return this.temperatureColors[localIdx] || [255, 255, 255];
+    }
+    return [255, 255, 255];
+  }
+
+  _resetCurrentStateLedMemory() {
+    const empty = new Array(10).fill(0);
+
+    if (this.nextState === "choose-rain") {
+      this.rainLedStates = [...empty];
+    } else if (this.nextState === "choose-wind") {
+      this.windLedStates = [...empty];
+    } else if (this.nextState === "choose-hour") {
+      this.hourLedStates = [...empty];
+    } else if (this.nextState === "choose-pollution") {
+      this.pollutionLedStates = [...empty];
+    } else if (this.nextState === "choose-temperature") {
+      this.temperatureLedStates = [...empty];
+    }
+  }
+
+  _fadeLedRGB(physicalIndex, fromRGB, toRGB, durationMs = 250) {
+    return new Promise((resolve) => {
+      const previousController = this.ledFadeControllers.get(physicalIndex);
+      if (previousController) {
+        previousController.cancelled = true;
+        if (previousController.rafId) {
+          cancelAnimationFrame(previousController.rafId);
+        }
+      }
+
+      const controller = { cancelled: false, rafId: null };
+      this.ledFadeControllers.set(physicalIndex, controller);
+
+      const start = performance.now();
+
+      const tick = (now) => {
+        if (controller.cancelled) {
+          resolve();
+          return;
+        }
+
+        const t = Math.min(1, (now - start) / durationMs);
+        const eased = t * t * (3 - 2 * t);
+
+        const r = Math.round(fromRGB[0] + (toRGB[0] - fromRGB[0]) * eased);
+        const g = Math.round(fromRGB[1] + (toRGB[1] - fromRGB[1]) * eased);
+        const b = Math.round(fromRGB[2] + (toRGB[2] - fromRGB[2]) * eased);
+
+        this.ledChangeRGB(physicalIndex, r, g, b);
+
+        if (t < 1) {
+          controller.rafId = requestAnimationFrame(tick);
+        } else {
+          if (this.ledFadeControllers.get(physicalIndex) === controller) {
+            this.ledFadeControllers.delete(physicalIndex);
+          }
+          resolve();
+        }
+      };
+
+      controller.rafId = requestAnimationFrame(tick);
+    });
+  }
+
+  _allLedsWhite() {
+    for (let i = 0; i < this.maxLeds; i++) {
+      this.ledChangeRGB(i, 255, 255, 255);
+    }
+  }
+
+  _allLedsOff() {
+    for (let i = 0; i < this.maxLeds; i++) {
+      this.ledChangeRGB(i, 0, 0, 0);
     }
   }
 
@@ -261,15 +575,20 @@ export default class DialogMachine extends TalkMachine {
 
     // Render all LEDs based on saved state
     for (let i = 0; i < this.localLedStates.length; i++) {
-      if (this.localLedStates[i] === 1) this.lightUpLocalLed(i, 255, 255, 255);
-      else this.lightUpLocalLed(i, 0, 0, 0);
+      if (this.localLedStates[i] === 1) {
+        const [r, g, b] = this._getColorForState(i);
+        this.lightUpLocalLed(i, r, g, b);
+      } else {
+        this.lightUpLocalLed(i, 0, 0, 0);
+      }
     }
   }
 
   _initCaseAudioEngine() {
-    const createTrack = (src, leds) => ({
+    const createTrack = (src, leds, gain = 1) => ({
       src,
       leds,
+      gain,
       element: new Audio(src),
     });
 
@@ -277,6 +596,8 @@ export default class DialogMachine extends TalkMachine {
       currentMode: null,
       minVolume: 0.2,
       fadeDurationMs: 180,
+      duckingFactor: 1,
+      speechDuckingFactor: 0.45,
       persistentSelections: {},
       modes: {
         rain: [
@@ -310,8 +631,8 @@ export default class DialogMachine extends TalkMachine {
           createTrack("audio/04-pollution/5-pollution.mp3", [4]),
           createTrack("audio/04-pollution/6-pollution.mp3", [5]),
           createTrack("audio/04-pollution/7-pollution.mp3", [6]),
-          createTrack("audio/04-pollution/8-pollution.mp3", [7]),
-          createTrack("audio/04-pollution/9-10-pollution.mp3", [8, 9]),
+          createTrack("audio/04-pollution/8-pollution.mp3", [7], 0.2),
+          createTrack("audio/04-pollution/9-10-pollution.mp3", [8, 9], 17),
         ],
       },
     };
@@ -341,7 +662,9 @@ export default class DialogMachine extends TalkMachine {
     targetVolume,
     durationMs = this.caseAudio.fadeDurationMs,
   ) {
-    const target = Math.max(0, Math.min(1, targetVolume));
+    const duckedTarget = targetVolume * (this.caseAudio?.duckingFactor ?? 1);
+    const trackGain = track?.gain ?? 1;
+    const target = Math.max(0, Math.min(1, duckedTarget * trackGain));
     const start = track.element.volume;
 
     if (Math.abs(start - target) < 0.01 || durationMs <= 0) {
@@ -477,6 +800,16 @@ export default class DialogMachine extends TalkMachine {
     });
   }
 
+  _setCaseAudioDucking(enabled) {
+    if (!this.caseAudio) return;
+
+    const nextFactor = enabled ? this.caseAudio.speechDuckingFactor : 1;
+    if (this.caseAudio.duckingFactor === nextFactor) return;
+
+    this.caseAudio.duckingFactor = nextFactor;
+    this._syncCaseAudioWithCurrentLed();
+  }
+
   /* CONTRÔLE DU DIALOGUE */
   startDialog() {
     this.dialogStarted = true;
@@ -510,6 +843,17 @@ export default class DialogMachine extends TalkMachine {
     this.hourCount = 0;
     this.pollutionCount = 0;
     this.temperatureCount = 0;
+
+    this.rainLedStates = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    this.windLedStates = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    this.hourLedStates = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    this.pollutionLedStates = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    this.temperatureLedStates = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+    this.finalSpeechPhase = 0;
+    this.finalMatchedLocation = null;
+    this.speechQueue = [];
+    this.speechQueueActive = false;
 
     this.fancyLogger.logMessage(
       "Dialog started: Long-press button pairs (1&2, 3&4, or 5&6) to begin...",
@@ -557,7 +901,6 @@ export default class DialogMachine extends TalkMachine {
     switch (this.nextState) {
       case "initialisation":
         // CONCEPT DE DIALOGUE: État de configuration - prépare le système avant l'interaction
-        this._stopAllCaseAudio();
         this.ledsAllOff();
         this.nextState = "waiting-for-ground"; // Wait for button pairs 1&2, 3&4, or 5&6
         this.fancyLogger.logMessage(
@@ -569,7 +912,6 @@ export default class DialogMachine extends TalkMachine {
       case "waiting-for-ground":
         // This state is waiting for a long press on button pairs 1&2, 3&4, or 5&6
         // The logic is handled in _handleButtonLongPressedImmediate
-        this._stopAllCaseAudio();
         this.fancyLogger.logMessage(
           "Waiting for long press on button pairs (1&2, 3&4, or 5&6)...",
         );
@@ -580,8 +922,13 @@ export default class DialogMachine extends TalkMachine {
         this.fancyLogger.logMessage(
           `Welcome! Pair ${this.currentGroundPair} long-pressed`,
         );
-        this.speakNormal("Welcome! Let's choose the rain.");
-        this.shouldContinue = true; // Continue to next state after speech
+        this.speakSequence(
+          [
+            "Bonjour et bienvenue ! Vous êtes en direct avec Caelum, votre studio météo personnel.",
+            "Pour composer votre météo idéale utilisez les boutons plus et moins pour ajuster l’intensité de chaque paramètres météo et tournez Caelum pour passer au suivant.",
+          ],
+          { continueToNextState: true },
+        );
         this.nextState = "choose-rain";
         break;
 
@@ -591,9 +938,7 @@ export default class DialogMachine extends TalkMachine {
         this.fancyLogger.logMessage(
           `Choose rain mode - current button: ${this.currentGroundButton}`,
         );
-        this.speakNormal(
-          `You are in rain mode with button ${this.currentGroundButton}.`,
-        );
+        this.speakNormal(`Choisissez l'intensité de pluie souhaitée!`);
 
         // Initialize LED stepper for this floor if first time entering
         if (!this.rainLedStepperInitialized) {
@@ -614,7 +959,7 @@ export default class DialogMachine extends TalkMachine {
           `Switched to wind mode - new button: ${this.currentGroundButton}`,
         );
         this.speakNormal(
-          `Now in wind mode with button ${this.currentGroundButton}.`,
+          `Vous avez choisi ${this.rainDescriptions[this.rainCount]}. Choisissez maintenant l'intensité du vent!`,
         );
 
         // Initialize LED stepper for this floor if first time entering
@@ -634,7 +979,7 @@ export default class DialogMachine extends TalkMachine {
           `Switched to hour mode - new button: ${this.currentGroundButton}`,
         );
         this.speakNormal(
-          `Now in hour mode with button ${this.currentGroundButton}.`,
+          `Vous avez choisi ${this.windDescriptions[this.windCount]}. Choisissez maintenant le moment de la journée!`,
         );
 
         // Initialize LED stepper for this floor if first time entering
@@ -654,7 +999,7 @@ export default class DialogMachine extends TalkMachine {
           `Switched to pollution mode - new button: ${this.currentGroundButton}`,
         );
         this.speakNormal(
-          `Now in pollution mode with button ${this.currentGroundButton}.`,
+          `Vous avez choisi ${this.hourDescriptions[this.hourCount]}. Choisissez maintenant la qualité de l'air!`,
         );
 
         // Initialize LED stepper for this floor if first time entering
@@ -672,7 +1017,7 @@ export default class DialogMachine extends TalkMachine {
           `Switched to temperature mode - new button: ${this.currentGroundButton}`,
         );
         this.speakNormal(
-          `Now in temperature mode with button ${this.currentGroundButton}.`,
+          `Vous avez choisi ${this.pollutionDescriptions[this.pollutionCount]}. Choisissez maintenant votre temperature idéale!`,
         );
 
         // Initialize LED stepper for this floor if first time entering
@@ -686,7 +1031,6 @@ export default class DialogMachine extends TalkMachine {
 
       case "summary":
         // CONCEPT: Display all collected parameters and wait for 4 presses of button 0
-        this._stopAllCaseAudio();
         this.fancyLogger.logMessage("═══════════════════════════════════");
         this.fancyLogger.logMessage("SUMMARY OF YOUR SELECTIONS:");
         this.fancyLogger.logMessage(`Rain Count: ${this.rainCount}/10`);
@@ -704,7 +1048,7 @@ export default class DialogMachine extends TalkMachine {
         );
 
         this.speakNormal(
-          "Summary complete. Press button zero four times to finish.",
+          "Vos conditions météorologiques idéales sont assemblées. Vous pouvez à présent profiter de votre ambiance customisée. Pour découvrir où cette météo est disponible… secouez Caelum.",
         );
 
         // Reset button 0 press tracking
@@ -716,17 +1060,23 @@ export default class DialogMachine extends TalkMachine {
 
       case "final":
         // CONCEPT: Final state after successful button 0 sequence
-        this._stopAllCaseAudio();
         this.fancyLogger.logMessage("═══════════════════════════════════");
         this.fancyLogger.logMessage("🎉 CONGRATULATIONS! 🎉");
         this.fancyLogger.logMessage("You have completed the dialog!");
         this.fancyLogger.logMessage("═══════════════════════════════════");
 
-        const match = this.findClosestLocation();
-        this.speakNormal(`Your climate match is ${match.name}.`);
+        const pairNumber = this.currentGroundPair;
+        if (pairNumber !== null) {
+          (async () => {
+            await this.animateGroundActivation(pairNumber);
+            await this.animateGroundActivation(pairNumber);
+            await this.animateGroundActivation(pairNumber);
+          })();
+        }
 
-        // Turn all LEDs to a celebratory color
-        this.ledsAllChangeColor("green", 1); // Blinking green
+        this.finalMatchedLocation = this.findClosestLocation();
+        this.finalSpeechPhase = 1;
+        this.speakNormal("Analyse des conditions en cours…");
 
         this.waitingForUserInput = false;
         break;
@@ -750,7 +1100,22 @@ export default class DialogMachine extends TalkMachine {
    */
   speakNormal(_text) {
     // appelé pour dire un texte
-    this.speechText(_text, this.preset_voice_normal);
+    this._setCaseAudioDucking(true);
+    this.speechText(_text, [186, 0.9, 0.8]);
+  }
+
+  speakSequence(lines, { continueToNextState = false } = {}) {
+    const list = Array.isArray(lines) ? lines : [String(lines)];
+    this.speechQueue = list.filter(Boolean);
+
+    if (this.speechQueue.length === 0) {
+      if (continueToNextState) this.goToNextState();
+      return;
+    }
+
+    this.speechQueueActive = true;
+    this.shouldContinue = continueToNextState;
+    this.speakNormal(this.speechQueue.shift());
   }
 
   /**
@@ -922,6 +1287,7 @@ export default class DialogMachine extends TalkMachine {
 
     // SPECIAL: Handle button 0 presses in summary state
     if (this.nextState === "summary" && button === "0") {
+      this._allLedsWhite();
       this._handleButton0PressInSummary();
       return;
     }
@@ -1005,6 +1371,7 @@ export default class DialogMachine extends TalkMachine {
 
     // SPECIAL: Handle button 0 release in summary state
     if (this.nextState === "summary" && button === "0") {
+      this._allLedsOff();
       this._handleButton0ReleaseInSummary();
       return;
     }
@@ -1078,6 +1445,11 @@ export default class DialogMachine extends TalkMachine {
       // First long press - set ground and go to welcome
       this.currentGroundPair = pairNumber;
       this.lastGroundPair = pairNumber;
+      (async () => {
+        await this.animateGroundActivation(pairNumber);
+        await this.animateGroundActivation(pairNumber);
+        await this.animateGroundActivation(pairNumber);
+      })();
       this.nextState = "welcome";
       this.dialogFlow();
     } else if (
@@ -1109,6 +1481,11 @@ export default class DialogMachine extends TalkMachine {
       // Update to new pair
       this.currentGroundPair = pairNumber;
       this.lastGroundPair = pairNumber;
+      (async () => {
+        await this.animateGroundActivation(pairNumber);
+        await this.animateGroundActivation(pairNumber);
+        await this.animateGroundActivation(pairNumber);
+      })();
 
       // Determine the next state and restore its LED configuration
       let targetState = "";
@@ -1539,6 +1916,34 @@ export default class DialogMachine extends TalkMachine {
    */
   _handleTextToSpeechEnded() {
     this.fancyLogger.logSpeech("speech ended");
+
+    if (this.speechQueueActive) {
+      if (this.speechQueue.length > 0) {
+        this.speakNormal(this.speechQueue.shift());
+        return;
+      }
+
+      this.speechQueueActive = false;
+      this.speechQueue = [];
+    }
+
+    this._setCaseAudioDucking(false);
+
+    if (this.nextState === "final" && this.finalSpeechPhase === 1) {
+      this.finalSpeechPhase = 2;
+
+      (async () => {
+        await this.animateGroundArraysLoading(3);
+
+        const match = this.finalMatchedLocation || this.findClosestLocation();
+        this.speakNormal(
+          `Correspondance trouvée. Cette météo se trouve actuellement à: ${match.name}.`,
+        );
+      })();
+
+      return;
+    }
+
     if (this.shouldContinue) {
       // aller à l'état suivant après la fin de la parole
       this.shouldContinue = false;
